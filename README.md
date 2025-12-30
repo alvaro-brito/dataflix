@@ -453,6 +453,6 @@ docker-compose exec superset python -c "from clickhouse_driver import Client; c 
 
 ## 📝 TODO
 
-- [ ] Superset Error - Metrics
-- [ ] Superset Error - Charts
-- [ ] Superset Error - Dashboard
+- [x] Superset Error - Metrics
+- [x] Superset Error - Charts
+- [x] Superset Error - Dashboard
