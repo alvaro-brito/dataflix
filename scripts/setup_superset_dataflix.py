@@ -104,13 +104,7 @@ with app.app_context():
         "Total Movies Watched", 
         "Users by State", 
         "User-Movie Interaction Matrix", 
-        "Aggregated Ratings",
-        "Filmes por Gênero", 
-        "Avaliação Média por Filme", 
-        "Total de Filmes Assistidos", 
-        "Usuários por Estado", 
-        "Matriz de Interação Usuário-Filme", 
-        "Ratings Agregados"
+        "Aggregated Ratings"
     ]
     charts = db.session.query(Slice).filter(Slice.slice_name.in_(chart_names)).all()
     for c in charts:
