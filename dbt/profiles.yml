@@ -1,0 +1,12 @@
+dataflix:
+  target: dev
+  outputs:
+    dev:
+      type: clickhouse
+      host: clickhouse-server
+      port: 9000
+      user: default
+      password: clickhouse123
+      schema: analytics
+      threads: 4
+      timeout_seconds: 300

@@ -1,0 +1,6 @@
+-- ============================================================================
+-- Dataflix - ClickHouse Databases
+-- ============================================================================
+
+CREATE DATABASE IF NOT EXISTS raw;
+CREATE DATABASE IF NOT EXISTS analytics;

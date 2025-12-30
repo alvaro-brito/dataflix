@@ -1,0 +1,363 @@
+
+services:
+  # ============================================================================
+  # PostgreSQL Source (OLTP)
+  # ============================================================================
+  postgres-source:
+    image: postgres:15-alpine
+    container_name: postgres-dataflix
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dataflix-network
+
+  # ============================================================================
+  # ClickHouse (Data Warehouse)
+  # ============================================================================
+  clickhouse-server:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse-dataflix
+    restart: unless-stopped
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+      - ./clickhouse/init:/docker-entrypoint-initdb.d
+    environment:
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - dataflix-network
+
+  # ============================================================================
+  # Airflow Database (PostgreSQL)
+  # ============================================================================
+  airflow-db:
+    image: postgres:13-alpine
+    container_name: airflow-db-dataflix
+    environment:
+      POSTGRES_USER: ${AIRFLOW_DB_USER}
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD}
+      POSTGRES_DB: airflow
+    ports:
+      - "5433:5432"
+    volumes:
+      - airflow_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AIRFLOW_DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dataflix-network
+
+  # ============================================================================
+  # Airflow Init (Database initialization)
+  # ============================================================================
+  airflow-init:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: airflow-init-dataflix
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db:5432/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    networks:
+      - dataflix-network
+    command: >
+      bash -c "
+        airflow db init &&
+        airflow users create --username ${AIRFLOW_USER} --password ${AIRFLOW_PASSWORD} --firstname Admin --lastname User --role Admin --email admin@example.com || true
+      "
+
+  # ============================================================================
+  # Airflow Webserver
+  # ============================================================================
+  airflow-webserver:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: airflow-webserver-dataflix
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db:5432/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
+      AIRFLOW__CORE__DAG_DISCOVERY_SAFE_MODE: "false"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
+      POSTGRES_HOST: postgres-source
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      CLICKHOUSE_HOST: clickhouse-server
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    networks:
+      - dataflix-network
+    restart: unless-stopped
+    command: airflow webserver
+
+  # ============================================================================
+  # Airflow Scheduler
+  # ============================================================================
+  airflow-scheduler:
+    build:
+      context: ./airflow
+      dockerfile: Dockerfile
+    container_name: airflow-scheduler-dataflix
+    depends_on:
+      airflow-db:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+      airflow-webserver:
+        condition: service_started
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${AIRFLOW_DB_USER}:${AIRFLOW_DB_PASSWORD}@airflow-db:5432/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      AIRFLOW__LOGGING__BASE_LOG_FOLDER: /opt/airflow/logs
+      AIRFLOW__CORE__DAG_DISCOVERY_SAFE_MODE: "false"
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      POSTGRES_HOST: postgres-source
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      CLICKHOUSE_HOST: clickhouse-server
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+    networks:
+      - dataflix-network
+    restart: unless-stopped
+    command: airflow scheduler
+
+  # ============================================================================
+  # dbt / webhook (Transformações - Automação Dbt)
+  # ============================================================================
+  webhook-server:
+    build:
+      context: ./dbt
+      dockerfile: Dockerfile
+    container_name: webhook-server-dataflix
+    working_dir: /usr/app
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./dbt:/usr/app
+    environment:
+      DBT_PROFILES_DIR: /usr/app
+      CLICKHOUSE_HOST: clickhouse-server
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    networks:
+      - dataflix-network
+    command: python webhook_server.py
+    restart: unless-stopped
+
+  # ============================================================================
+  # Minio (S3-compatible Storage for MLflow)
+  # ============================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: minio-dataflix
+    ports:
+      - "${MINIO_PORT}:${MINIO_PORT}"
+      - "${MINIO_CONSOLE_PORT}:${MINIO_CONSOLE_PORT}"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ':${MINIO_CONSOLE_PORT}' --address ':${MINIO_PORT}'
+    networks:
+      - dataflix-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Minio Client (Create bucket for MLflow)
+  # ============================================================================
+  minio-client:
+    image: minio/mc:latest
+    container_name: minio-client-dataflix
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5 &&
+      /usr/bin/mc alias set minio http://minio:${MINIO_PORT} ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD} &&
+      /usr/bin/mc mb minio/mlflow || true &&
+      exit 0;
+      "
+    networks:
+      - dataflix-network
+
+  # ============================================================================
+  # MLflow Database (MySQL)
+  # ============================================================================
+  mlflow-db:
+    image: mysql:8.0
+    container_name: mlflow-db-dataflix
+    environment:
+      MYSQL_DATABASE: mlflow_database
+      MYSQL_USER: mlflow_user
+      MYSQL_PASSWORD: mlflow123
+      MYSQL_ROOT_PASSWORD: mysql123
+    ports:
+      - "3306:3306"
+    volumes:
+      - mlflow_db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-pmysql123"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dataflix-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # MLflow Server
+  # ============================================================================
+  mlflow-server:
+    build:
+      context: ./mlflow
+      dockerfile: Dockerfile
+    container_name: mlflow-server-dataflix
+    depends_on:
+      minio-client:
+        condition: service_completed_successfully
+      mlflow-db:
+        condition: service_healthy
+    ports:
+      - "5003:5000"
+      - "5004:5001"
+    environment:
+      MLFLOW_S3_ENDPOINT_URL: http://minio:${MINIO_PORT}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      MLFLOW_BACKEND_STORE_URI: mysql+pymysql://mlflow_user:mlflow123@mlflow-db:3306/mlflow_database
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: s3://mlflow/
+      MLFLOW_TRACKING_URI: http://localhost:5000
+      CLICKHOUSE_HOST: clickhouse-server
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    networks:
+      - dataflix-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Apache Superset (Visualization)
+  # ============================================================================
+  superset:
+    image: apache/superset:3.1.0
+    container_name: superset-dataflix
+    depends_on:
+      - postgres-source
+      - clickhouse-server
+    environment:
+      SUPERSET_SECRET_KEY: "your-secret-key-change-this"
+      SUPERSET_CONFIG_PATH: "/app/superset_config.py"
+      SUPERSET_ADMIN_USERNAME: admin
+      SUPERSET_ADMIN_PASSWORD: admin
+      SUPERSET_ADMIN_EMAIL: admin@example.com
+      SUPERSET_ADMIN_FIRSTNAME: Admin
+      SUPERSET_ADMIN_LASTNAME: User
+    ports:
+      - "8088:8088"
+    volumes:
+      - superset_data:/var/lib/superset
+      - ./superset/config/superset_config.py:/app/superset_config.py
+    networks:
+      - dataflix-network
+    command: bash -c "pip install clickhouse-connect -q && superset db upgrade && superset fab create-admin --username admin --password admin --firstname Admin --lastname User --email admin@example.com 2>/dev/null || true && superset init && superset run -h 0.0.0.0 -p 8088"
+    restart: unless-stopped
+
+  # ============================================================================
+  # Backend API (Flask)
+  # ============================================================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: backend-dataflix
+    depends_on:
+      - postgres-source
+      - mlflow-server
+    ports:
+      - "5002:5002"
+    environment:
+      FLASK_ENV: ${FLASK_ENV}
+      FLASK_DEBUG: ${FLASK_DEBUG}
+      POSTGRES_HOST: postgres-source
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      MLFLOW_TRACKING_URI: http://mlflow-server:5000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:${MINIO_PORT}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+    volumes:
+      - ./backend:/app
+    networks:
+      - dataflix-network
+    restart: unless-stopped
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  dataflix-network:
+    driver: bridge
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  postgres_data:
+  clickhouse_data:
+  clickhouse_logs:
+  airflow_db_data:
+  minio_data:
+  mlflow_db_data:
+  superset_data:
