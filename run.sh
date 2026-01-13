@@ -7,6 +7,14 @@
 
 set -e
 
+# Ensure local python bin is in PATH (for tools like uv)
+if command -v python3 &> /dev/null; then
+    USER_BASE=$(python3 -m site --user-base)
+    if [ -d "$USER_BASE/bin" ]; then
+        export PATH="$USER_BASE/bin:$PATH"
+    fi
+fi
+
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -116,7 +124,7 @@ echo -e "${BLUE}Configuring Superset${NC}"
 echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 
 log_info "Setting up Superset with ClickHouse connection..."
-python3 scripts/setup_superset_dataflix.py 2>&1 || log_warning "Superset setup completed with warnings"
+uv run python scripts/setup_superset_dataflix.py 2>&1 || log_warning "Superset setup completed with warnings"
 
 # Finish
 echo ""
@@ -133,10 +141,10 @@ echo "  ClickHouse: http://localhost:8123"
 echo '  dbt Docs: http://localhost:5001/docs/#!/overview'
 echo ""
 echo -e "${GREEN}To verify everything is working:${NC}"
-echo "  python3 check_all_works.py"
+echo "  uv run python check_all_works.py"
 echo ""
 echo -e "${GREEN}To use the CLI:${NC}"
-echo "  python3 cli/main.py"
+echo "  uv run python cli/main.py"
 echo ""
 echo -e "${GREEN}To stop services:${NC}"
 echo "  ./stop.sh"
